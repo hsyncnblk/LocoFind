@@ -551,21 +551,157 @@ function generateSiblingLocator(
   };
 }
 
-function generateAbsoluteXPath(
+function generateGrandparentLocator(
   doc: Document,
-  el: Element
-): LocatorCandidate {
-  const absoluteXPath = generateXPath(el);
-  const count = countXPathMatches(doc, absoluteXPath);
+  el: Element,
+  platform: Platform
+): LocatorCandidate | null {
+  const parent = el.parentElement;
+  if (!parent) return null;
+  const grandparent = parent.parentElement;
+  if (!grandparent || grandparent === doc.documentElement) return null;
+
+  const gpAttrs = getElementAttributes(grandparent);
+  let gpId = '';
+  let gpAttrName = '';
+
+  if (platform === 'ios') {
+    gpId = gpAttrs['name'] || gpAttrs['label'] || '';
+    gpAttrName = gpAttrs['name'] ? 'name' : 'label';
+  } else if (platform === 'android') {
+    gpId = gpAttrs['resource-id'] || gpAttrs['content-desc'] || '';
+    gpAttrName = gpAttrs['resource-id'] ? 'resource-id' : 'content-desc';
+  } else {
+    gpId = gpAttrs['id'] || gpAttrs['name'] || '';
+    gpAttrName = gpAttrs['id'] ? 'id' : 'name';
+  }
+
+  if (!gpId) return null;
+
+  const xpath = `//*[@${gpAttrName}=${escapeXPathValue(gpId)}]//${el.tagName}`;
+  const count = countXPathMatches(doc, xpath);
+
+  if (count > 5) return null;
 
   return {
     strategy: 'xpath',
-    value: absoluteXPath,
-    resolvedXPath: absoluteXPath,
+    value: xpath,
+    resolvedXPath: xpath,
+    matchCount: count,
+    priority: 9,
+    label: 'XPath (Grandparent Context)',
+    appiumCommand: `AppiumBy.XPATH, "${xpath}"`,
+    isUnique: count === 1,
+  };
+}
+
+function generateAncestorDescendantLocator(
+  doc: Document,
+  el: Element,
+  platform: Platform
+): LocatorCandidate | null {
+  let ancestor: Element | null = el.parentElement;
+  let depth = 0;
+  const maxDepth = 5;
+
+  while (ancestor && ancestor !== doc.documentElement && depth < maxDepth) {
+    const aAttrs = getElementAttributes(ancestor);
+    let aId = '';
+    let aAttrName = '';
+
+    if (platform === 'ios') {
+      aId = aAttrs['name'] || aAttrs['label'] || aAttrs['identifier'] || '';
+      aAttrName = aAttrs['name'] ? 'name' : aAttrs['label'] ? 'label' : 'identifier';
+    } else if (platform === 'android') {
+      aId = aAttrs['resource-id'] || aAttrs['content-desc'] || '';
+      aAttrName = aAttrs['resource-id'] ? 'resource-id' : 'content-desc';
+    } else {
+      aId = aAttrs['id'] || aAttrs['name'] || '';
+      aAttrName = aAttrs['id'] ? 'id' : 'name';
+    }
+
+    if (aId) {
+      const xpath = `//*[@${aAttrName}=${escapeXPathValue(aId)}]/descendant::${el.tagName}`;
+      const count = countXPathMatches(doc, xpath);
+
+      if (count === 1) {
+        return {
+          strategy: 'xpath',
+          value: xpath,
+          resolvedXPath: xpath,
+          matchCount: count,
+          priority: 7 + depth,
+          label: `XPath (Ancestor → ${el.tagName})`,
+          appiumCommand: `AppiumBy.XPATH, "${xpath}"`,
+          isUnique: true,
+        };
+      }
+
+      const elAttrs = getElementAttributes(el);
+      const elId = elAttrs['name'] || elAttrs['label'] || elAttrs['text'] ||
+        elAttrs['resource-id'] || elAttrs['content-desc'] || elAttrs['id'] || '';
+
+      if (elId && count > 1) {
+        const elAttrName = elAttrs['name'] ? 'name' : elAttrs['label'] ? 'label' :
+          elAttrs['text'] ? 'text' : elAttrs['resource-id'] ? 'resource-id' :
+          elAttrs['content-desc'] ? 'content-desc' : 'id';
+        const refinedXpath = `//*[@${aAttrName}=${escapeXPathValue(aId)}]/descendant::${el.tagName}[@${elAttrName}=${escapeXPathValue(elId)}]`;
+        const refinedCount = countXPathMatches(doc, refinedXpath);
+
+        if (refinedCount >= 1 && refinedCount <= 3) {
+          return {
+            strategy: 'xpath',
+            value: refinedXpath,
+            resolvedXPath: refinedXpath,
+            matchCount: refinedCount,
+            priority: 6 + depth,
+            label: `XPath (Ancestor + Attribute)`,
+            appiumCommand: `AppiumBy.XPATH, "${refinedXpath}"`,
+            isUnique: refinedCount === 1,
+          };
+        }
+      }
+    }
+
+    ancestor = ancestor.parentElement;
+    depth++;
+  }
+
+  return null;
+}
+
+function generateTagIndexLocator(
+  doc: Document,
+  el: Element
+): LocatorCandidate | null {
+  const parent = el.parentElement;
+  if (!parent) return null;
+
+  let index = 1;
+  let sibling = el.previousElementSibling;
+  while (sibling) {
+    if (sibling.tagName === el.tagName) index++;
+    sibling = sibling.previousElementSibling;
+  }
+
+  let sameTagTotal = 0;
+  for (let i = 0; i < parent.children.length; i++) {
+    if (parent.children[i].tagName === el.tagName) sameTagTotal++;
+  }
+
+  if (sameTagTotal <= 1) return null;
+
+  const xpath = `//${el.tagName}[${index}]`;
+  const count = countXPathMatches(doc, xpath);
+
+  return {
+    strategy: 'xpath',
+    value: xpath,
+    resolvedXPath: xpath,
     matchCount: count,
     priority: 10,
-    label: 'XPath (Absolute)',
-    appiumCommand: `AppiumBy.XPATH, "${absoluteXPath}"`,
+    label: `XPath (Tag Index [${index}/${sameTagTotal}])`,
+    appiumCommand: `AppiumBy.XPATH, "${xpath}"`,
     isUnique: count === 1,
   };
 }
@@ -593,7 +729,14 @@ export function generateLocatorsForElement(
   const siblingCandidate = generateSiblingLocator(doc, el);
   if (siblingCandidate) candidates.push(siblingCandidate);
 
-  candidates.push(generateAbsoluteXPath(doc, el));
+  const grandparentCandidate = generateGrandparentLocator(doc, el, platform);
+  if (grandparentCandidate) candidates.push(grandparentCandidate);
+
+  const ancestorCandidate = generateAncestorDescendantLocator(doc, el, platform);
+  if (ancestorCandidate) candidates.push(ancestorCandidate);
+
+  const tagIndexCandidate = generateTagIndexLocator(doc, el);
+  if (tagIndexCandidate) candidates.push(tagIndexCandidate);
 
   candidates = candidates.filter(c => c.matchCount >= 0);
 
