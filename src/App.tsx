@@ -3,6 +3,7 @@ import type { Platform, ParseResult } from './types';
 import { parseSource } from './parsers';
 import type { GenerationResult } from './utils/locatorGenerator';
 import { generateByLine } from './utils/locatorGenerator';
+import { formatXmlOneLine } from './utils/xmlFormatter';
 import { useTheme } from './hooks/useTheme';
 import { PlatformSelector } from './components/PlatformSelector';
 import { InputPanel } from './components/InputPanel';
@@ -40,15 +41,16 @@ function App() {
   );
 
   const handleSourceChange = useCallback((source: string, name?: string) => {
-    setXmlSource(source);
+    const formatted = source.trim() ? formatXmlOneLine(source) : '';
+    setXmlSource(formatted);
     if (name !== undefined) setFileName(name || null);
     setGenerationResult(null);
     setHighlightLine(null);
 
-    if (source.trim()) {
-      const result = parseSource(source);
+    if (formatted) {
+      const result = parseSource(formatted);
       setParseResult(result);
-      parsedDocRef.current = { source, result };
+      parsedDocRef.current = { source: formatted, result };
     } else {
       setParseResult(null);
       parsedDocRef.current = null;
