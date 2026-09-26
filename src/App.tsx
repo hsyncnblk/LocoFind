@@ -1,8 +1,10 @@
 import { useState, useCallback, useRef } from 'react';
-import type { Platform, LocatorStrategy, ParseResult, LocatorResult, MatchStatus } from './types';
+import type { Platform, ParseResult, LocatorResult, MatchStatus } from './types';
 import { parseSource, evaluateXPath } from './parsers';
 import { resolveLocator } from './translators';
-import { getDefaultStrategy, generateDifferentiatorHints } from './utils/helpers';
+import { generateDifferentiatorHints } from './utils/helpers';
+import { detectLocatorStrategy } from './utils/locatorDetector';
+import type { DetectionResult } from './utils/locatorDetector';
 import { useTheme } from './hooks/useTheme';
 import { PlatformSelector } from './components/PlatformSelector';
 import { InputPanel } from './components/InputPanel';
@@ -19,7 +21,6 @@ function App() {
   const { isDark, toggleTheme } = useTheme();
 
   const [platform, setPlatform] = useState<Platform>('ios');
-  const [strategy, setStrategy] = useState<LocatorStrategy>(getDefaultStrategy('ios'));
   const [locatorValue, setLocatorValue] = useState('');
   const [xmlSource, setXmlSource] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
@@ -27,14 +28,15 @@ function App() {
 
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [locatorResult, setLocatorResult] = useState<LocatorResult | null>(null);
+  const [lastDetection, setLastDetection] = useState<DetectionResult | null>(null);
 
   const parsedDocRef = useRef<{ source: string; result: ParseResult } | null>(null);
 
   const handlePlatformChange = useCallback(
     (newPlatform: Platform) => {
       setPlatform(newPlatform);
-      setStrategy(getDefaultStrategy(newPlatform));
       setLocatorResult(null);
+      setLastDetection(null);
     },
     []
   );
@@ -87,7 +89,10 @@ function App() {
           return;
         }
 
-        const resolved = resolveLocator(platform, strategy, locatorValue);
+        const detection = detectLocatorStrategy(platform, locatorValue);
+        setLastDetection(detection);
+
+        const resolved = resolveLocator(platform, detection.strategy, locatorValue);
 
         if (resolved.error) {
           setLocatorResult({
@@ -151,7 +156,9 @@ function App() {
 
       setIsProcessing(false);
     });
-  }, [xmlSource, locatorValue, platform, strategy]);
+  }, [xmlSource, locatorValue, platform]);
+
+  const detectedStrategy = lastDetection?.strategy ?? detectLocatorStrategy(platform, locatorValue).strategy;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -206,10 +213,8 @@ function App() {
           />
           <LocatorInput
             platform={platform}
-            strategy={strategy}
             locatorValue={locatorValue}
             isProcessing={isProcessing}
-            onStrategyChange={setStrategy}
             onValueChange={setLocatorValue}
             onVerify={handleVerify}
             hasSource={!!xmlSource.trim() && (parseResult?.nodeCount ?? 0) > 0}
@@ -223,7 +228,7 @@ function App() {
             {locatorResult.status === 'unique' && (
               <CodeSnippet
                 platform={platform}
-                strategy={strategy}
+                strategy={detectedStrategy}
                 locatorValue={locatorValue}
                 resolvedXPath={locatorResult.resolvedXPath}
               />
