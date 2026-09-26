@@ -1,42 +1,40 @@
 import { useState, useCallback, useRef } from 'react';
-import type { Platform, ParseResult, LocatorResult, MatchStatus } from './types';
-import { parseSource, evaluateXPath } from './parsers';
-import { resolveLocator } from './translators';
-import { generateDifferentiatorHints } from './utils/helpers';
-import { detectLocatorStrategy } from './utils/locatorDetector';
-import type { DetectionResult } from './utils/locatorDetector';
+import type { Platform, ParseResult } from './types';
+import { parseSource } from './parsers';
+import type { GenerationResult } from './utils/locatorGenerator';
+import { generateByLine } from './utils/locatorGenerator';
 import { useTheme } from './hooks/useTheme';
 import { PlatformSelector } from './components/PlatformSelector';
 import { InputPanel } from './components/InputPanel';
 import { LocatorInput } from './components/LocatorInput';
-import { ResultCard } from './components/ResultCard';
+import { GeneratedLocatorCard } from './components/GeneratedLocatorCard';
 import { ElementTable } from './components/ElementTable';
 import { DomTreeViewer } from './components/DomTreeViewer';
-import { CodeSnippet } from './components/CodeSnippet';
 import { ThemeToggle } from './components/ThemeToggle';
 import { AuthorBadge } from './components/AuthorBadge';
-import { Search, Zap, Shield, Activity } from 'lucide-react';
+import { Search, Zap, Shield, Activity, ScanSearch } from 'lucide-react';
 
 function App() {
   const { isDark, toggleTheme } = useTheme();
 
   const [platform, setPlatform] = useState<Platform>('ios');
-  const [locatorValue, setLocatorValue] = useState('');
+  const [lineNumber, setLineNumber] = useState('');
   const [xmlSource, setXmlSource] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [highlightLine, setHighlightLine] = useState<number | null>(null);
 
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
-  const [locatorResult, setLocatorResult] = useState<LocatorResult | null>(null);
-  const [lastDetection, setLastDetection] = useState<DetectionResult | null>(null);
+  const [generationResult, setGenerationResult] = useState<GenerationResult | null>(null);
 
   const parsedDocRef = useRef<{ source: string; result: ParseResult } | null>(null);
+
+  const totalLines = xmlSource ? xmlSource.split('\n').length : 0;
 
   const handlePlatformChange = useCallback(
     (newPlatform: Platform) => {
       setPlatform(newPlatform);
-      setLocatorResult(null);
-      setLastDetection(null);
+      setGenerationResult(null);
     },
     []
   );
@@ -44,7 +42,8 @@ function App() {
   const handleSourceChange = useCallback((source: string, name?: string) => {
     setXmlSource(source);
     if (name !== undefined) setFileName(name || null);
-    setLocatorResult(null);
+    setGenerationResult(null);
+    setHighlightLine(null);
 
     if (source.trim()) {
       const result = parseSource(source);
@@ -56,14 +55,24 @@ function App() {
     }
   }, []);
 
-  const handleVerify = useCallback(() => {
-    if (!xmlSource.trim() || !locatorValue.trim()) return;
+  const handleLineNumberChange = useCallback((value: string) => {
+    setLineNumber(value);
+    const parsed = parseInt(value);
+    if (!isNaN(parsed) && parsed >= 1) {
+      setHighlightLine(parsed);
+    } else {
+      setHighlightLine(null);
+    }
+  }, []);
+
+  const handleGenerate = useCallback(() => {
+    const parsed = parseInt(lineNumber);
+    if (!xmlSource.trim() || isNaN(parsed) || parsed < 1 || parsed > totalLines) return;
 
     setIsProcessing(true);
+    setHighlightLine(parsed);
 
     requestAnimationFrame(() => {
-      const startTime = performance.now();
-
       try {
         let doc: Document | null = null;
         if (parsedDocRef.current?.source === xmlSource) {
@@ -76,89 +85,30 @@ function App() {
         }
 
         if (!doc) {
-          setLocatorResult({
-            status: 'error',
-            matchCount: 0,
-            elements: [],
-            resolvedXPath: '',
-            executionTimeMs: performance.now() - startTime,
-            differentiatorHints: [],
-            errorMessage: 'XML/HTML parse edilemedi. Lütfen kaynağı kontrol edin.',
+          setGenerationResult({
+            searchTerm: `Satır ${parsed}`,
+            foundElements: [],
+            executionTimeMs: 0,
           });
           setIsProcessing(false);
           return;
         }
 
-        const detection = detectLocatorStrategy(platform, locatorValue);
-        setLastDetection(detection);
-
-        const resolved = resolveLocator(platform, detection.strategy, locatorValue);
-
-        if (resolved.error) {
-          setLocatorResult({
-            status: 'error',
-            matchCount: 0,
-            elements: [],
-            resolvedXPath: resolved.xpath,
-            executionTimeMs: performance.now() - startTime,
-            differentiatorHints: [],
-            errorMessage: resolved.error,
-          });
-          setIsProcessing(false);
-          return;
-        }
-
-        const evalResult = evaluateXPath(doc, resolved.xpath);
-
-        if (evalResult.error) {
-          setLocatorResult({
-            status: 'error',
-            matchCount: 0,
-            elements: [],
-            resolvedXPath: resolved.xpath,
-            executionTimeMs: performance.now() - startTime,
-            differentiatorHints: [],
-            errorMessage: evalResult.error,
-          });
-          setIsProcessing(false);
-          return;
-        }
-
-        const elements = evalResult.elements;
-        const executionTimeMs = performance.now() - startTime;
-
-        let status: MatchStatus;
-        if (elements.length === 0) status = 'not-found';
-        else if (elements.length === 1) status = 'unique';
-        else status = 'multiple';
-
-        const hints = generateDifferentiatorHints(elements);
-
-        setLocatorResult({
-          status,
-          matchCount: elements.length,
-          elements,
-          resolvedXPath: resolved.xpath,
-          executionTimeMs,
-          differentiatorHints: hints,
-        });
-      } catch (err) {
-        setLocatorResult({
-          status: 'error',
-          matchCount: 0,
-          elements: [],
-          resolvedXPath: '',
-          executionTimeMs: performance.now() - startTime,
-          differentiatorHints: [],
-          errorMessage: `Beklenmeyen hata: ${(err as Error).message}`,
+        const result = generateByLine(doc, platform, xmlSource, parsed);
+        setGenerationResult(result);
+      } catch {
+        setGenerationResult({
+          searchTerm: `Satır ${parsed}`,
+          foundElements: [],
+          executionTimeMs: 0,
         });
       }
 
       setIsProcessing(false);
     });
-  }, [xmlSource, locatorValue, platform]);
+  }, [xmlSource, lineNumber, platform, totalLines]);
 
-  const detectedStrategy = lastDetection?.strategy ?? detectLocatorStrategy(platform, locatorValue).strategy;
+  const matchedElements = generationResult?.foundElements.map(f => f.element) || [];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -177,7 +127,7 @@ function App() {
                   QA Locator Inspector
                 </h1>
                 <p className="text-[10px] text-slate-500 font-medium tracking-wider uppercase">
-                  Verifier v1.0
+                  Verifier v2.0
                 </p>
               </div>
             </div>
@@ -210,68 +160,64 @@ function App() {
             parseErrors={parseResult?.errors || []}
             nodeCount={parseResult?.nodeCount || 0}
             parseTimeMs={parseResult?.parseTimeMs || 0}
+            highlightLine={highlightLine}
           />
           <LocatorInput
             platform={platform}
-            locatorValue={locatorValue}
+            lineNumber={lineNumber}
             isProcessing={isProcessing}
-            onValueChange={setLocatorValue}
-            onVerify={handleVerify}
+            onLineNumberChange={handleLineNumberChange}
+            onGenerate={handleGenerate}
             hasSource={!!xmlSource.trim() && (parseResult?.nodeCount ?? 0) > 0}
+            totalLines={totalLines}
           />
         </div>
 
-        {locatorResult && (
+        {generationResult && (
           <div className="flex flex-col gap-5">
-            <ResultCard result={locatorResult} resolvedXPath={locatorResult.resolvedXPath} />
+            <GeneratedLocatorCard
+              platform={platform}
+              foundElements={generationResult.foundElements}
+              executionTimeMs={generationResult.executionTimeMs}
+            />
 
-            {locatorResult.status === 'unique' && (
-              <CodeSnippet
-                platform={platform}
-                strategy={detectedStrategy}
-                locatorValue={locatorValue}
-                resolvedXPath={locatorResult.resolvedXPath}
-              />
-            )}
-
-            {locatorResult.elements.length > 0 && (
+            {matchedElements.length > 0 && (
               <ElementTable
                 platform={platform}
-                elements={locatorResult.elements}
-                hints={locatorResult.differentiatorHints}
+                elements={matchedElements}
+                hints={[]}
               />
             )}
 
-            {parseResult?.doc && locatorResult.elements.length > 0 && (
-              <DomTreeViewer doc={parseResult.doc} matchedElements={locatorResult.elements} />
+            {parseResult?.doc && matchedElements.length > 0 && (
+              <DomTreeViewer doc={parseResult.doc} matchedElements={matchedElements} />
             )}
           </div>
         )}
 
-        {!locatorResult && !xmlSource && (
+        {!generationResult && !xmlSource && (
           <div className="flex flex-col items-center justify-center py-24 animate-fade-in">
             <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-500/20 to-violet-500/10 flex items-center justify-center mb-6 border border-brand-500/10">
-              <Search className="w-9 h-9 text-brand-400/60" />
+              <ScanSearch className="w-9 h-9 text-brand-400/60" />
             </div>
             <h2 className="text-xl font-bold text-slate-200 mb-2">
-              Locator Doğrulamaya Başlayın
+              Akıllı Locator Üreticisi
             </h2>
             <p className="text-sm text-slate-500 text-center max-w-md mb-8">
-              XML/HTML sayfa hiyerarşisini yükleyin, platform seçin ve locator ifadenizi doğrulayın.
-              BrowserStack kuyruğunda beklemeye son!
+              XML/HTML yükleyin, satır numarası girin — en iyi locator otomatik üretilsin ve doğrulansın.
             </p>
             <div className="grid grid-cols-3 gap-6 max-w-lg">
               <div className="flex flex-col items-center gap-2 text-center">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
                   <Zap className="w-5 h-5 text-emerald-400" />
                 </div>
-                <span className="text-xs text-slate-400">Anlık Doğrulama</span>
+                <span className="text-xs text-slate-400">Otomatik Üretim</span>
               </div>
               <div className="flex flex-col items-center gap-2 text-center">
                 <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
                   <Shield className="w-5 h-5 text-cyan-400" />
                 </div>
-                <span className="text-xs text-slate-400">Flaky Test Tespiti</span>
+                <span className="text-xs text-slate-400">Kendini Doğrular</span>
               </div>
               <div className="flex flex-col items-center gap-2 text-center">
                 <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center">
