@@ -215,17 +215,21 @@ export const InputPanel: React.FC<InputPanelProps> = ({
               </div>
             </div>
 
-            <div className="relative flex-1 overflow-hidden">
+            <div className="relative flex-1 overflow-auto">
               <textarea
                 ref={textareaRef}
                 id="xml-source-input"
                 value={xmlSource}
                 onChange={(e) => onSourceChange(e.target.value)}
                 onScroll={handleScroll}
+                wrap="off"
                 className="absolute inset-0 w-full h-full bg-transparent text-slate-300 font-mono text-[11px] leading-[18px] py-2 px-3 resize-none outline-none border-none"
                 spellCheck={false}
                 style={{
                   lineHeight: '18px',
+                  whiteSpace: 'pre',
+                  overflowX: 'auto',
+                  overflowY: 'auto',
                 }}
               />
 
