@@ -18,7 +18,7 @@ import { Search, Zap, Shield, Activity } from 'lucide-react';
 function App() {
   const { isDark, toggleTheme } = useTheme();
 
-  const [platform, setPlatform] = useState<Platform>('android');
+  const [platform, setPlatform] = useState<Platform>('ios');
   const [strategy, setStrategy] = useState<LocatorStrategy>(getDefaultStrategy('ios'));
   const [locatorValue, setLocatorValue] = useState('');
   const [xmlSource, setXmlSource] = useState('');
