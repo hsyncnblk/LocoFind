@@ -173,6 +173,58 @@ function escapeXPathValue(val: string): string {
   return `concat('${parts.join("',\"'\",'")}')`;
 }
 
+function hasDynamicPart(text: string): boolean {
+  if (/\(\d+\)/.test(text)) return true;
+  if (/\d{2,}/.test(text) && /[a-zA-ZçğıöşüÇĞİÖŞÜ]/.test(text)) return true;
+  if (/[\$€₺]\s*\d/.test(text)) return true;
+  if (/\d+[.,]\d+/.test(text)) return true;
+  return false;
+}
+
+function extractStaticPart(text: string): string {
+  let cleaned = text
+    .replace(/\s*\([\d.,\s]+\)\s*/g, '')
+    .replace(/\s*[\$€₺][\d.,\s]+/g, '')
+    .replace(/\s+\d+[.,]?\d*\s*$/g, '')
+    .replace(/^\d+[.,]?\d*\s+/g, '')
+    .trim();
+
+  if (cleaned.length < 2) return '';
+  return cleaned;
+}
+
+function addContainsCandidate(
+  doc: Document,
+  candidates: LocatorCandidate[],
+  attrName: string,
+  fullValue: string,
+  strategyType: LocatorStrategy,
+  priorityBase: number,
+  labelPrefix: string,
+  appiumByName: string
+): void {
+  if (!hasDynamicPart(fullValue)) return;
+
+  const staticPart = extractStaticPart(fullValue);
+  if (!staticPart || staticPart === fullValue) return;
+
+  const xpath = `//*[contains(@${attrName}, ${escapeXPathValue(staticPart)})]`;
+  const count = countXPathMatches(doc, xpath);
+
+  if (count <= 0 || count > 10) return;
+
+  candidates.push({
+    strategy: strategyType,
+    value: staticPart,
+    resolvedXPath: xpath,
+    matchCount: count,
+    priority: priorityBase + 0.5,
+    label: `${labelPrefix} (contains — dinamik veri)`,
+    appiumCommand: `element = driver.find_element(${appiumByName}, "${staticPart}")`,
+    isUnique: count === 1,
+  });
+}
+
 function generateIOSCandidates(
   doc: Document,
   el: Element,
@@ -182,8 +234,25 @@ function generateIOSCandidates(
 
   const name = attrs['name'] || '';
   const label = attrs['label'] || '';
+  const value = attrs['value'] || '';
   const identifier = attrs['identifier'] || '';
   const type = el.tagName;
+
+  if (identifier) {
+    const xpath = `//*[@identifier=${escapeXPathValue(identifier)}]`;
+    const count = countXPathMatches(doc, xpath);
+    candidates.push({
+      strategy: 'accessibility-id',
+      value: identifier,
+      resolvedXPath: xpath,
+      matchCount: count,
+      priority: 1,
+      label: 'Accessibility ID (identifier)',
+      appiumCommand: `element = driver.find_element(AppiumBy.ACCESSIBILITY_ID, "${identifier}")`,
+      isUnique: count === 1,
+    });
+    addContainsCandidate(doc, candidates, 'identifier', identifier, 'predicate-string', 1, 'iOS Predicate', 'AppiumBy.IOS_PREDICATE');
+  }
 
   if (name) {
     const xpath = `//*[@name=${escapeXPathValue(name)}]`;
@@ -195,9 +264,10 @@ function generateIOSCandidates(
       matchCount: count,
       priority: 1,
       label: 'Accessibility ID (name)',
-      appiumCommand: `AppiumBy.ACCESSIBILITY_ID, "${name}"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.ACCESSIBILITY_ID, "${name}")`,
       isUnique: count === 1,
     });
+    addContainsCandidate(doc, candidates, 'name', name, 'predicate-string', 1, 'iOS Predicate', 'AppiumBy.IOS_PREDICATE');
   }
 
   if (label && label !== name) {
@@ -210,24 +280,26 @@ function generateIOSCandidates(
       matchCount: count,
       priority: 2,
       label: 'Accessibility ID (label)',
-      appiumCommand: `AppiumBy.ACCESSIBILITY_ID, "${label}"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.ACCESSIBILITY_ID, "${label}")`,
       isUnique: count === 1,
     });
+    addContainsCandidate(doc, candidates, 'label', label, 'predicate-string', 2, 'iOS Predicate', 'AppiumBy.IOS_PREDICATE');
   }
 
-  if (identifier) {
-    const xpath = `//*[@identifier=${escapeXPathValue(identifier)}]`;
+  if (value && value !== name && value !== label) {
+    const xpath = `//*[@value=${escapeXPathValue(value)}]`;
     const count = countXPathMatches(doc, xpath);
     candidates.push({
-      strategy: 'accessibility-id',
-      value: identifier,
+      strategy: 'predicate-string',
+      value: `value == '${value}'`,
       resolvedXPath: xpath,
       matchCount: count,
-      priority: 1,
-      label: 'Accessibility ID (identifier)',
-      appiumCommand: `AppiumBy.ACCESSIBILITY_ID, "${identifier}"`,
+      priority: 2,
+      label: 'iOS Predicate (value)',
+      appiumCommand: `element = driver.find_element(AppiumBy.IOS_PREDICATE, "value == '${value}'")`,
       isUnique: count === 1,
     });
+    addContainsCandidate(doc, candidates, 'value', value, 'predicate-string', 2, 'iOS Predicate', 'AppiumBy.IOS_PREDICATE');
   }
 
   if (name && type) {
@@ -241,7 +313,7 @@ function generateIOSCandidates(
       matchCount: count,
       priority: 3,
       label: 'iOS Predicate (type + name)',
-      appiumCommand: `AppiumBy.IOS_PREDICATE, "${predValue}"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.IOS_PREDICATE, "${predValue}")`,
       isUnique: count === 1,
     });
   }
@@ -257,27 +329,46 @@ function generateIOSCandidates(
       matchCount: count,
       priority: 4,
       label: 'iOS Predicate (type + label)',
-      appiumCommand: `AppiumBy.IOS_PREDICATE, "${predValue}"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.IOS_PREDICATE, "${predValue}")`,
       isUnique: count === 1,
     });
   }
 
-  if (type.startsWith('XCUI') || type.startsWith('xcui')) {
-    if (name) {
-      const chainValue = `**/${type}[\`name == '${name}'\`]`;
-      const xpath = `//*[self::${type}][@name=${escapeXPathValue(name)}]`;
+  if (name && hasDynamicPart(name)) {
+    const staticPart = extractStaticPart(name);
+    if (staticPart) {
+      const predValue = `type == '${type}' AND name CONTAINS '${staticPart}'`;
+      const xpath = `//*[self::${type}][contains(@name, ${escapeXPathValue(staticPart)})]`;
       const count = countXPathMatches(doc, xpath);
-      candidates.push({
-        strategy: 'class-chain',
-        value: chainValue,
-        resolvedXPath: xpath,
-        matchCount: count,
-        priority: 5,
-        label: 'iOS Class Chain',
-        appiumCommand: `AppiumBy.IOS_CLASS_CHAIN, "${chainValue}"`,
-        isUnique: count === 1,
-      });
+      if (count > 0 && count <= 5) {
+        candidates.push({
+          strategy: 'predicate-string',
+          value: predValue,
+          resolvedXPath: xpath,
+          matchCount: count,
+          priority: 4,
+          label: 'iOS Predicate (type + contains name)',
+          appiumCommand: `element = driver.find_element(AppiumBy.IOS_PREDICATE, "${predValue}")`,
+          isUnique: count === 1,
+        });
+      }
     }
+  }
+
+  if ((type.startsWith('XCUI') || type.startsWith('xcui')) && name) {
+    const chainValue = `**/${type}[\`name == '${name}'\`]`;
+    const xpath = `//*[self::${type}][@name=${escapeXPathValue(name)}]`;
+    const count = countXPathMatches(doc, xpath);
+    candidates.push({
+      strategy: 'class-chain',
+      value: chainValue,
+      resolvedXPath: xpath,
+      matchCount: count,
+      priority: 5,
+      label: 'iOS Class Chain',
+      appiumCommand: `element = driver.find_element(AppiumBy.IOS_CLASS_CHAIN, "${chainValue}")`,
+      isUnique: count === 1,
+    });
   }
 
   return candidates;
@@ -304,7 +395,7 @@ function generateAndroidCandidates(
       matchCount: count,
       priority: 1,
       label: 'Resource ID',
-      appiumCommand: `AppiumBy.ID, "${resourceId}"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.ID, "${resourceId}")`,
       isUnique: count === 1,
     });
 
@@ -320,7 +411,7 @@ function generateAndroidCandidates(
           matchCount: combinedCount,
           priority: 2,
           label: 'XPath (ID + Text)',
-          appiumCommand: `AppiumBy.XPATH, "${combinedXpath}"`,
+          appiumCommand: `element = driver.find_element(AppiumBy.XPATH, "${combinedXpath}")`,
           isUnique: combinedCount === 1,
         });
       }
@@ -337,9 +428,10 @@ function generateAndroidCandidates(
       matchCount: count,
       priority: 2,
       label: 'Content Description',
-      appiumCommand: `AppiumBy.ACCESSIBILITY_ID, "${contentDesc}"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.ACCESSIBILITY_ID, "${contentDesc}")`,
       isUnique: count === 1,
     });
+    addContainsCandidate(doc, candidates, 'content-desc', contentDesc, 'xpath', 2, 'XPath contains', 'AppiumBy.XPATH');
   }
 
   if (text) {
@@ -352,9 +444,29 @@ function generateAndroidCandidates(
       matchCount: count,
       priority: 3,
       label: 'Text',
-      appiumCommand: `AppiumBy.XPATH, "//*[@text='${text}']"`,
+      appiumCommand: `element = driver.find_element(AppiumBy.XPATH, "//*[@text='${text}']")`,
       isUnique: count === 1,
     });
+
+    if (hasDynamicPart(text)) {
+      const staticPart = extractStaticPart(text);
+      if (staticPart) {
+        const containsXpath = `//*[contains(@text, ${escapeXPathValue(staticPart)})]`;
+        const containsCount = countXPathMatches(doc, containsXpath);
+        if (containsCount > 0 && containsCount <= 10) {
+          candidates.push({
+            strategy: 'xpath',
+            value: containsXpath,
+            resolvedXPath: containsXpath,
+            matchCount: containsCount,
+            priority: 3.5,
+            label: 'XPath contains Text (dinamik veri)',
+            appiumCommand: `element = driver.find_element(AppiumBy.XPATH, "//*[contains(@text, '${staticPart}')]")`,
+            isUnique: containsCount === 1,
+          });
+        }
+      }
+    }
   }
 
   return candidates;
@@ -383,7 +495,7 @@ function generateWebCandidates(
       matchCount: count,
       priority: 1,
       label: 'HTML ID',
-      appiumCommand: `By.ID, "${id}"`,
+      appiumCommand: `element = driver.find_element(By.ID, "${id}")`,
       isUnique: count === 1,
     });
   }
@@ -398,7 +510,7 @@ function generateWebCandidates(
       matchCount: count,
       priority: 2,
       label: 'HTML Name',
-      appiumCommand: `By.NAME, "${name}"`,
+      appiumCommand: `element = driver.find_element(By.NAME, "${name}")`,
       isUnique: count === 1,
     });
   }
@@ -416,7 +528,7 @@ function generateWebCandidates(
         matchCount: count,
         priority: 4,
         label: 'Class Name',
-        appiumCommand: `By.CLASS_NAME, "${mainClass}"`,
+        appiumCommand: `element = driver.find_element(By.CLASS_NAME, "${mainClass}")`,
         isUnique: count === 1,
       });
 
@@ -436,7 +548,7 @@ function generateWebCandidates(
           matchCount: cssCount,
           priority: 3,
           label: 'CSS Selector',
-          appiumCommand: `By.CSS_SELECTOR, "${cssSelector}"`,
+          appiumCommand: `element = driver.find_element(By.CSS_SELECTOR, "${cssSelector}")`,
           isUnique: cssCount === 1,
         });
       }
